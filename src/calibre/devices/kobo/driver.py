@@ -25,10 +25,11 @@ from calibre.constants import DEBUG
 from calibre.devices.kobo.books import Book, ImageWrapper, KTCollectionsBookList
 from calibre.devices.mime import mime_type_ext
 from calibre.devices.usbms.books import BookList, CollectionsBookList
-from calibre.devices.usbms.driver import USBMS, debug_print
+from calibre.devices.usbms.driver import USBMS
 from calibre.ebooks.metadata import authors_to_string
 from calibre.ebooks.metadata.book.base import Metadata
 from calibre.ebooks.metadata.utils import normalize_languages
+from calibre.prints import debug_print
 from calibre.ptempfile import PersistentTemporaryFile, better_mktemp
 from calibre.utils.config_base import prefs
 from calibre.utils.date import parse_date
@@ -3252,7 +3253,9 @@ class KOBOTOUCH(KOBO):
         # debug_print('KoboTouch:set_core_metadata book="%s"' % book.title)
         show_debug = self.is_debugging_title(book.title)
         if show_debug:
-            debug_print(f'KoboTouch:set_core_metadata book="{book}", \nseries_only="{series_only}"')
+            debug_print(f'KoboTouch:set_core_metadata book="{book}"\n'
+                        f'series_only="{series_only}"\n'
+                        f'force_series_id="{self.force_series_id}"')
 
         def generate_update_from_template(book, update_values, set_clause, column_name, new_value=None, template=None, current_value=None):
             if template is None or template == '':
@@ -3326,7 +3329,12 @@ class KOBOTOUCH(KOBO):
             set_clause.append('Series')
             update_values.append(new_series_number)
             set_clause.append('SeriesNumber')
-        if self.supports_series_list and book.is_sideloaded:
+        if self.force_series_id:
+            update_values.append(new_series)
+            set_clause.append('SeriesID')
+            update_values.append(newmi.series_index)
+            set_clause.append('SeriesNumberFloat')
+        elif self.supports_series_list and book.is_sideloaded:
             series_id = self.kobo_series_dict.get(new_series, new_series)
             try:
                 kobo_series_id = book.kobo_series_id
@@ -3336,8 +3344,8 @@ class KOBOTOUCH(KOBO):
                 kobo_series_number_float = None
 
             if series_changed or series_number_changed \
-               or not kobo_series_id == series_id \
-               or not kobo_series_number_float == newmi.series_index:
+               or kobo_series_id != series_id \
+               or kobo_series_number_float != newmi.series_index:
                 update_values.append(series_id)
                 set_clause.append('SeriesID')
                 update_values.append(newmi.series_index)
@@ -3529,6 +3537,7 @@ class KOBOTOUCH(KOBO):
         c.add_opt('show_recommendations', default=False)
 
         c.add_opt('update_series', default=True)
+        c.add_opt('force_series_id', default=False)
         c.add_opt('update_core_metadata', default=False)
         c.add_opt('update_purchased_kepubs', default=False)
         c.add_opt('update_device_metadata', default=True)
@@ -3841,6 +3850,10 @@ class KOBOTOUCH(KOBO):
     @property
     def update_series_details(self):
         return self.update_device_metadata and self.get_pref('update_series') and self.supports_series()
+
+    @property
+    def force_series_id(self):
+        return self.update_device_metadata and self.get_pref('force_series_id') and self.supports_series()
 
     @property
     def update_subtitle(self):
