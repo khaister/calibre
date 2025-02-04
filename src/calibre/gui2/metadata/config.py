@@ -30,7 +30,7 @@ class FieldsModel(FM):  # {{{
         for x in fields:
             if not x.startswith('identifier:') and x not in self.exclude:
                 self.fields.append(x)
-        self.fields.sort(key=lambda x:self.descs.get(x, x))
+        self.fields.sort(key=lambda x: self.descs.get(x, x))
         self.endResetModel()
 
     def state(self, field, defaults=False):
@@ -96,6 +96,7 @@ class ConfigWidget(QWidget):
         if opt.type == 'number':
             c = QSpinBox if isinstance(opt.default, numbers.Integral) else QDoubleSpinBox
             widget = c(self)
+            widget.setRange(min(widget.minimum(), 20 * val), max(widget.maximum(), 20 * val))
             widget.setValue(val)
         elif opt.type == 'string':
             widget = QLineEdit(self)

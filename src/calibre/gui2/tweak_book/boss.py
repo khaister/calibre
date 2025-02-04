@@ -118,6 +118,19 @@ def get_boss():
     return get_boss.boss
 
 
+def open_path_in_new_editor_instance(path: str):
+    import subprocess
+
+    from calibre.gui2 import sanitize_env_vars
+    with sanitize_env_vars():
+        if ismacos:
+            from calibre.utils.ipc.launch import macos_edit_book_bundle_path
+            bundle = os.path.dirname(os.path.dirname(macos_edit_book_bundle_path().rstrip('/')))
+            subprocess.Popen(['open', '-n', '-a', bundle, path])
+        else:
+            subprocess.Popen([sys.executable, path])
+
+
 class Boss(QObject):
 
     handle_completion_result_signal = pyqtSignal(object)
@@ -260,7 +273,7 @@ class Boss(QObject):
 
     def mkdtemp(self, prefix=''):
         self.container_count += 1
-        return tempfile.mkdtemp(prefix='%s%05d-' % (prefix, self.container_count), dir=self.tdir)
+        return tempfile.mkdtemp(prefix=f'{prefix}{self.container_count:05}-', dir=self.tdir)
 
     def _check_before_open(self):
         if self.gui.action_save.isEnabled():
@@ -316,7 +329,10 @@ class Boss(QObject):
         if isinstance(path, (list, tuple)) and path:
             # Can happen from an file_event_hook on OS X when drag and dropping
             # onto the icon in the dock or using open -a
-            path = path[-1]
+            extra_paths = path[1:]
+            path = path[0]
+            for x in extra_paths:
+                open_path_in_new_editor_instance(x)
         if not self._check_before_open():
             return
         if not hasattr(path, 'rpartition'):
@@ -560,7 +576,7 @@ class Boss(QObject):
             folder_map = get_recommended_folders(current_container(), files)
             files = {x:('/'.join((folder, os.path.basename(x))) if folder else os.path.basename(x))
                      for x, folder in iteritems(folder_map)}
-            self.add_savepoint(_('Before Add files'))
+            self.add_savepoint(_('Before: Add files'))
             c = current_container()
             added_fonts = set()
             for path in sorted(files, key=numeric_sort_key):
@@ -569,7 +585,7 @@ class Boss(QObject):
                 while c.exists(name) or c.manifest_has_name(name) or c.has_name_case_insensitive(name):
                     i += 1
                     name, ext = name.rpartition('.')[0::2]
-                    name = '%s_%d.%s' % (name, i, ext)
+                    name = f'{name}_{i}.{ext}'
                 try:
                     with open(path, 'rb') as f:
                         c.add_file(name, f.read())
@@ -614,8 +630,14 @@ class Boss(QObject):
         if not self.ensure_book(_('You must open a book before trying to edit the Table of Contents.')):
             return
         self.add_savepoint(_('Before: Edit Table of Contents'))
-        d = TOCEditor(title=self.current_metadata.title, parent=self.gui)
-        if d.exec() != QDialog.DialogCode.Accepted:
+        self.__current_toc_editor = d = TOCEditor(title=self.current_metadata.title, parent=self.gui)
+        d.finished.connect(self.toc_edit_finished)
+        # Using d.exec() causes showing the webview to hide the dialog
+        d.open()
+
+    def toc_edit_finished(self, retcode: int):
+        self.__current_toc_editor = None
+        if retcode != QDialog.DialogCode.Accepted:
             self.rewind_savepoint()
             return
         with BusyCursor():
@@ -806,7 +828,7 @@ class Boss(QObject):
                   ' it will look like: {1}Try to use only the English alphabet [a-z], numbers [0-9],'
                   ' hyphens and underscores for file names. Other characters can cause problems for '
                   ' different e-book viewers. Are you sure you want to proceed?').format(
-                      '<pre>%s</pre>'%newname, '<pre>%s</pre>' % urlnormalize(newname)),
+                      f'<pre>{newname}</pre>', f'<pre>{urlnormalize(newname)}</pre>'),
                 'confirm-urlunsafe-change', parent=self.gui, title=_('Are you sure?'), config_set=tprefs):
                 return
         self.add_savepoint(_('Before: Rename %s') % oldname)
@@ -859,7 +881,7 @@ class Boss(QObject):
     def update_global_history_actions(self):
         gu = self.global_undo
         for x, text in (('undo', _('&Revert to')), ('redo', _('&Revert to'))):
-            ac = getattr(self.gui, 'action_global_%s' % x)
+            ac = getattr(self.gui, f'action_global_{x}')
             ac.setEnabled(getattr(gu, 'can_' + x))
             ac.setText(text + ' "%s"'%(getattr(gu, x + '_msg') or '...'))
 
@@ -1462,7 +1484,7 @@ class Boss(QObject):
         if not name:
             return
         editor = self.open_editor_for_name(name)
-        if anchor and hasattr(editor, 'go_to_anchor') :
+        if anchor and hasattr(editor, 'go_to_anchor'):
             if editor.go_to_anchor(anchor):
                 self.gui.preview.pending_go_to_anchor = anchor
             elif show_anchor_not_found:
@@ -1648,6 +1670,19 @@ class Boss(QObject):
             self.commit_all_editors_to_container()
             self.gui.check_external_links.show()
 
+    def embed_tts(self):
+        if not self.ensure_book(_('You must first open a book in order to add Text-to-speech narration.')):
+            return
+        self.commit_all_editors_to_container()
+        from calibre.gui2.tweak_book.tts import TTSEmbed
+        self.add_savepoint(_('Before: adding narration'))
+        d = TTSEmbed(current_container(), self.gui)
+        if d.exec() == QDialog.DialogCode.Accepted:
+            self.apply_container_update_to_gui()
+            self.show_current_diff()
+        else:
+            self.rewind_savepoint()
+
     def compress_images(self):
         if not self.ensure_book(_('You must first open a book in order to compress images.')):
             return
@@ -1721,7 +1756,7 @@ class Boss(QObject):
             lnum = node.get('data-lnum')
             if lnum:
                 tags_before = []
-                for tag in root.xpath('//*[@data-lnum="%s"]' % lnum):
+                for tag in root.xpath(f'//*[@data-lnum="{lnum}"]'):
                     tags_before.append(barename(tag))
                     if tag is node:
                         break

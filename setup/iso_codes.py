@@ -16,13 +16,13 @@ from setup import Command, download_securely
 
 @lru_cache(2)
 def iso_codes_data():
-    URL = 'https://salsa.debian.org/iso-codes-team/iso-codes/-/archive/main/iso-codes-main.zip'
+    URL = 'https://download.calibre-ebook.com/iso-codes.zip'
     return download_securely(URL)
 
 
 class ISOData(Command):
     description = 'Get ISO codes name localization data'
-    top_level_filename =  'iso-codes-main'
+    top_level_filename = 'iso-codes-main'
     _zip_data = None
 
     def add_options(self, parser):

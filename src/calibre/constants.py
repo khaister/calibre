@@ -11,10 +11,10 @@ from functools import lru_cache
 from polyglot.builtins import environ_item, hasenv
 
 __appname__   = 'calibre'
-numeric_version = (7, 14, 0)
+numeric_version = (7, 24, 102)
 __version__   = '.'.join(map(str, numeric_version))
 git_version   = None
-__author__    = "Kovid Goyal <kovid@kovidgoyal.net>"
+__author__    = 'Kovid Goyal <kovid@kovidgoyal.net>'
 
 '''
 Various run time constants.
@@ -146,7 +146,7 @@ def _get_cache_dir():
 
     if iswindows:
         try:
-            candidate = os.path.join(winutil.special_folder_path(winutil.CSIDL_LOCAL_APPDATA), '%s-cache'%__appname__)
+            candidate = os.path.join(winutil.special_folder_path(winutil.CSIDL_LOCAL_APPDATA), f'{__appname__}-cache')
         except ValueError:
             return confcache
     elif ismacos:
@@ -260,9 +260,11 @@ class ExtensionsImporter:
             'speedup',
             'html_as_json',
             'fast_css_transform',
+            'fast_html_entities',
             'unicode_names',
             'html_syntax_highlighter',
             'hyphen',
+            'ffmpeg',
             'freetype',
             'imageops',
             'hunspell',
@@ -275,7 +277,7 @@ class ExtensionsImporter:
             'uchardet',
         )
         if iswindows:
-            extra = ('winutil', 'wpd', 'winfonts', 'winsapi', 'winspeech')
+            extra = ('winutil', 'wpd', 'winfonts', 'wintoast')
         elif ismacos:
             extra = ('usbobserver', 'cocoa', 'libusb', 'libmtp')
         elif isfreebsd or ishaiku or islinux:
@@ -339,7 +341,7 @@ class Plugins(collections.abc.Mapping):
         try:
             return import_module('calibre_extensions.' + name), ''
         except ModuleNotFoundError:
-            raise KeyError('No plugin named %r'%name)
+            raise KeyError(f'No plugin named {name!r}')
         except Exception as err:
             return None, str(err)
 
@@ -407,7 +409,6 @@ else:
                 pass
         atexit.register(cleanup_cdir)
 # }}}
-
 
 is_running_from_develop = False
 if getattr(sys, 'frozen', False):
@@ -488,7 +489,36 @@ def get_umask():
     return mask
 
 
-# call this at startup as it changed process global state, which doesn't work
+# call this at startup as it changes process global state, which doesn't work
 # with multi-threading. It's absurd there is no way to safely read the current
 # umask of a process.
 get_umask()
+
+
+@lru_cache(maxsize=2)
+def bundled_binaries_dir() -> str:
+    if ismacos and hasattr(sys, 'frameworks_dir'):
+        base = os.path.join(os.path.dirname(sys.frameworks_dir), 'utils.app', 'Contents', 'MacOS')
+        return base
+    if iswindows and hasattr(sys, 'frozen'):
+        base = sys.extensions_location if hasattr(sys, 'new_app_layout') else os.path.dirname(sys.executable)
+        return base
+    if (islinux or isbsd) and getattr(sys, 'frozen', False):
+        return os.path.join(sys.executables_location, 'bin')
+    return ''
+
+
+@lru_cache(2)
+def piper_cmdline() -> tuple[str, ...]:
+    ext = '.exe' if iswindows else ''
+    if bbd := bundled_binaries_dir():
+        if ismacos:
+            return (os.path.join(sys.frameworks_dir, 'piper', 'piper'),)
+        return (os.path.join(bbd, 'piper', 'piper' + ext),)
+    if pd := os.environ.get('PIPER_TTS_DIR'):
+        return (os.path.join(pd, 'piper' + ext),)
+    import shutil
+    exe = shutil.which('piper-tts')
+    if exe:
+        return (exe,)
+    return ()

@@ -1,7 +1,7 @@
 __license__   = 'GPL v3'
 __copyright__ = '2008, Kovid Goyal <kovid at kovidgoyal.net>'
 
-""" The GUI """
+''' The GUI '''
 
 import glob
 import os
@@ -302,7 +302,6 @@ QIcon.icon_as_png = icon_resource_manager.icon_as_png
 QIcon.is_ok = lambda self: not self.isNull() and len(self.availableSizes()) > 0
 QIcon.cached_icon = icon_resource_manager.cached_icon
 
-
 # Setup gprefs {{{
 gprefs = JSONConfig('gui')
 
@@ -411,12 +410,16 @@ def create_defs():
     defs['tag_browser_old_look'] = False
     defs['tag_browser_hide_empty_categories'] = False
     defs['tag_browser_always_autocollapse'] = False
+    defs['tag_browser_restore_tree_expansion'] = False
     defs['tag_browser_allow_keyboard_focus'] = False
     defs['book_list_tooltips'] = True
     defs['show_layout_buttons'] = False
+    # defs['show_sb_preference_button'] = False
+    defs['show_sb_all_actions_button'] = False
     defs['bd_show_cover'] = True
     defs['bd_overlay_cover_size'] = False
     defs['tags_browser_category_icons'] = {}
+    defs['tags_browser_value_icons'] = {}
     defs['cover_browser_reflections'] = True
     defs['book_list_extra_row_spacing'] = 0
     defs['refresh_book_list_on_bulk_edit'] = True
@@ -465,7 +468,7 @@ def create_defs():
     defs['books_autoscroll_time'] = 2.0
     defs['edit_metadata_single_use_2_cols_for_custom_fields'] = True
     defs['edit_metadata_elide_labels'] = True
-    defs['edit_metadata_elision_point'] = "right"
+    defs['edit_metadata_elision_point'] = 'right'
     defs['edit_metadata_bulk_cc_label_length'] = 25
     defs['edit_metadata_single_cc_label_length'] = 12
     defs['edit_metadata_templates_only_F2_on_booklist'] = False
@@ -482,6 +485,9 @@ def create_defs():
     defs['dark_palettes'] = {}
     defs['light_palettes'] = {}
     defs['saved_layouts'] = {}
+    defs['book_details_note_link_icon_width'] = 1.0
+    defs['tag_browser_show_category_icons'] = True
+    defs['tag_browser_show_value_icons'] = True
 
     def migrate_tweak(tweak_name, pref_name):
         # If the tweak has been changed then leave the tweak in the file so
@@ -616,7 +622,6 @@ def _config():  # {{{
 
 
 config = _config()
-
 # }}}
 
 QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, config_dir)
@@ -1002,8 +1007,11 @@ def choose_files_and_remember_all_files(
 
 
 def is_dark_theme():
-    pal = QApplication.instance().palette()
-    return pal.is_dark_theme()
+    app = QApplication.instance()
+    if app is not None:
+        pal = QApplication.instance().palette()
+        return pal.is_dark_theme()
+    return False
 
 
 def choose_osx_app(window, name, title, default_dir='/Applications'):
@@ -1020,7 +1028,7 @@ def pixmap_to_data(pixmap, format='JPEG', quality=None):
     Return the QPixmap pixmap as a string saved in the specified format.
     '''
     if quality is None:
-        if format.upper() == "PNG":
+        if format.upper() == 'PNG':
             # For some reason on windows with Qt 5.6 using a quality of 90
             # generates invalid PNG data. Many other quality values work
             # but we use -1 for the default quality which is most likely to
@@ -1199,6 +1207,8 @@ class Application(QApplication):
         self.headless = headless
         from calibre_extensions import progress_indicator
         self.pi = progress_indicator
+        self._file_open_paths = []
+        self._file_open_lock = RLock()
         QApplication.setOrganizationName('calibre-ebook.com')
         QApplication.setOrganizationDomain(QApplication.organizationName())
         QApplication.setApplicationVersion(__version__)
@@ -1247,7 +1257,7 @@ class Application(QApplication):
             # Qt 5.10.1 on Linux resets the global font on first event loop tick.
             # So workaround it by setting the font once again in a timer.
             font_from_prefs = self.font()
-            QTimer.singleShot(0, lambda : QApplication.setFont(font_from_prefs))
+            QTimer.singleShot(0, lambda: QApplication.setFont(font_from_prefs))
         self.line_height = max(12, QFontMetrics(self.font()).lineSpacing())
 
         dl = QLocale(get_lang())
@@ -1258,8 +1268,6 @@ class Application(QApplication):
         self._translator = None
         self.load_translations()
         qt_app = self
-        self._file_open_paths = []
-        self._file_open_lock = RLock()
 
         if not ismacos:
             # OS X uses a native color dialog that does not support custom
@@ -1286,6 +1294,10 @@ class Application(QApplication):
             cft = cursor_blink_time()
             if cft >= 0:
                 self.setCursorFlashTime(int(cft))
+
+    @property
+    def using_calibre_style(self) -> bool:
+        return self.palette_manager.using_calibre_style
 
     @property
     def is_dark_theme(self):
@@ -1375,8 +1387,15 @@ class Application(QApplication):
     def _send_file_open_events(self):
         with self._file_open_lock:
             if self._file_open_paths:
-                self.file_event_hook(self._file_open_paths)
+                if callable(self.file_event_hook):
+                    self.file_event_hook(self._file_open_paths)
                 self._file_open_paths = []
+
+    def get_pending_file_open_events(self):
+        with self._file_open_lock:
+            ans = self._file_open_paths
+            self._file_open_paths = []
+        return ans
 
     def load_translations(self):
         if self._translator is not None:
@@ -1386,17 +1405,22 @@ class Application(QApplication):
 
     def event(self, e):
         etype = e.type()
-        if callable(self.file_event_hook) and etype == QEvent.Type.FileOpen:
-            url = e.url().toString(QUrl.ComponentFormattingOption.FullyEncoded)
-            if url and url.startswith('calibre://'):
+        if etype == QEvent.Type.FileOpen:
+            added_event = False
+            qurl = e.url()
+            if qurl.isLocalFile():
                 with self._file_open_lock:
-                    self._file_open_paths.append(url)
-                QTimer.singleShot(1000, self._send_file_open_events)
-                return True
-            path = str(e.file())
-            if os.access(path, os.R_OK):
-                with self._file_open_lock:
-                    self._file_open_paths.append(path)
+                    path = qurl.toLocalFile()
+                    if os.access(path, os.R_OK):
+                        self._file_open_paths.append(path)
+                    added_event = True
+            elif qurl.isValid():
+                if qurl.scheme() == 'calibre':
+                    url = qurl.toString(QUrl.ComponentFormattingOption.FullyEncoded)
+                    with self._file_open_lock:
+                        self._file_open_paths.append(url)
+                        added_event = True
+            if added_event:
                 QTimer.singleShot(1000, self._send_file_open_events)
             return True
         else:
@@ -1459,10 +1483,14 @@ def sanitize_env_vars():
             'LD_LIBRARY_PATH':'/lib', 'OPENSSL_MODULES': '/lib/ossl-modules',
         }
     elif iswindows:
-        env_vars = {'OPENSSL_MODULES': None}
+        env_vars = {'OPENSSL_MODULES': None, 'QTWEBENGINE_DISABLE_SANDBOX': None}
+        if os.environ.get('CALIBRE_USE_SYSTEM_CERTIFICATES', '') != '1':
+            env_vars['SSL_CERT_FILE'] = None
     elif ismacos:
         env_vars = {k:None for k in (
-                    'FONTCONFIG_FILE FONTCONFIG_PATH SSL_CERT_FILE OPENSSL_ENGINES OPENSSL_MODULES').split()}
+                    'FONTCONFIG_FILE FONTCONFIG_PATH OPENSSL_ENGINES OPENSSL_MODULES').split()}
+        if os.environ.get('CALIBRE_USE_SYSTEM_CERTIFICATES', '') != '1':
+            env_vars['SSL_CERT_FILE'] = None
     else:
         env_vars = {}
 
@@ -1521,7 +1549,7 @@ def open_url(qurl):
             # QDesktopServices::openUrl()
             ensure_app()
             cmd = ['xdg-open', qurl.toLocalFile() if qurl.isLocalFile() else qurl.toString(QUrl.ComponentFormattingOption.FullyEncoded)]
-            if isfrozen and QApplication.instance().platformName() == "wayland":
+            if isfrozen and QApplication.instance().platformName() == 'wayland':
                 # See https://bugreports.qt.io/browse/QTBUG-119438
                 run_cmd(cmd)
                 ok = True
@@ -1574,6 +1602,7 @@ def open_local_file(path):
 
 
 _ea_lock = Lock()
+
 
 def simple_excepthook(t, v, tb):
     return sys.__excepthook__(t, v, tb)
@@ -1663,7 +1692,7 @@ def elided_text(text, font=None, width=300, pos='middle'):
         font = QApplication.instance().font()
     fm = (font if isinstance(font, QFontMetrics) else QFontMetrics(font))
     delta = 4
-    ellipsis = '\u2026'
+    ellipsis = '…'
 
     def remove_middle(x):
         mid = len(x) // 2

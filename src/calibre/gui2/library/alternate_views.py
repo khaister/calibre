@@ -15,7 +15,6 @@ from io import BytesIO
 from textwrap import wrap
 from threading import Event, Thread
 
-from PIL import Image
 from qt.core import (
     QAbstractItemView,
     QApplication,
@@ -65,6 +64,7 @@ from calibre.gui2 import clip_border_radius, config, empty_index, gprefs, rating
 from calibre.gui2.dnd import path_from_qurl
 from calibre.gui2.gestures import GestureManager
 from calibre.gui2.library.caches import CoverCache, ThumbnailCache
+from calibre.gui2.library.models import themed_icon_name
 from calibre.gui2.pin_columns import PinContainer
 from calibre.utils import join_with_timeout
 from calibre.utils.config import prefs, tweaks
@@ -133,8 +133,8 @@ def image_to_data(image):  # {{{
     return ret
 # }}}
 
-# Drag 'n Drop {{{
 
+# Drag 'n Drop {{{
 
 def qt_item_view_base_class(self):
     for q in (QTableView, QListView, QTreeView):
@@ -331,8 +331,8 @@ def setup_dnd_interface(cls_or_self):
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
 # }}}
 
-# Manage slave views {{{
 
+# Manage slave views {{{
 
 def sync(func):
     @wraps(func)
@@ -436,8 +436,8 @@ class AlternateViews:
             self.current_view.marked_changed(old_marked, current_marked)
 # }}}
 
-# Rendering of covers {{{
 
+# Rendering of covers {{{
 
 class CoverDelegate(QStyledItemDelegate):
 
@@ -540,7 +540,7 @@ class CoverDelegate(QStyledItemDelegate):
         ans = None
         if mi is None:
             mi = db.get_proxy_metadata(book_id)
-        ans = formatter.safe_format(rule, mi, '', mi, column_name='cover_grid%d' % rule_index, template_cache=template_cache) or None
+        ans = formatter.safe_format(rule, mi, '', mi, column_name=f'cover_grid{rule_index}', template_cache=template_cache) or None
         cache[book_id][rule] = ans
         return ans, mi
 
@@ -555,7 +555,12 @@ class CoverDelegate(QStyledItemDelegate):
         elif name == ':ondevice':
             ans = QIcon.ic('ok.png').pixmap(sz, sz)
         elif name:
-            pmap = QIcon(os.path.join(config_dir, 'cc_icons', name)).pixmap(sz, sz)
+            pmap = None
+            d = themed_icon_name(os.path.join(config_dir, 'cc_icons'), name)
+            if d is not None:
+                pmap = QIcon(d).pixmap(sz, sz)
+            if pmap is None:
+                pmap = QIcon(os.path.join(config_dir, 'cc_icons', name)).pixmap(sz, sz)
             if not pmap.isNull():
                 ans = pmap
         cache[name] = ans
@@ -734,7 +739,7 @@ class CoverDelegate(QStyledItemDelegate):
             title = db.field_for('title', book_id)
             authors = db.field_for('authors', book_id)
             if title and authors:
-                title = '<b>%s</b>' % ('<br>'.join(wrap(p(title), 120)))
+                title = '<b>{}</b>'.format('<br>'.join(wrap(p(title), 120)))
                 authors = '<br>'.join(wrap(p(' & '.join(authors)), 120))
                 tt = f'{title}<br><br>{authors}'
                 series = db.field_for('series', book_id)
@@ -881,7 +886,7 @@ class GridView(QListView):
         bgcol = QColor(r, g, b)
         pal.setColor(QPalette.ColorRole.Base, bgcol)
         self.setPalette(pal)
-        ss = f'background-color: {bgcol.name()}; '
+        ss = f'background-color: {bgcol.name()}; border: 0px solid {bgcol.name()};'
         if tex:
             from calibre.gui2.preferences.texture_chooser import texture_path
             path = texture_path(tex)
@@ -1000,7 +1005,7 @@ class GridView(QListView):
         if db is None:
             return None
         tc = self.thumbnail_cache
-        cdata, timestamp = tc[book_id] # None, None if not cached.
+        cdata, timestamp = tc[book_id]  # None, None if not cached.
         if timestamp is None:
             # Cover not in cache. Try to read the cover from the library.
             has_cover, cdata, timestamp = db.new_api.cover_or_cache(book_id, 0, as_what='pil_image')
@@ -1017,6 +1022,7 @@ class GridView(QListView):
                                                                      as_what='pil_image')
             if has_cover:
                 if tcdata is None:
+                    from PIL import Image
                     # The cached cover is up-to-date. Convert the cached bytes
                     # to a PIL image
                     cache_valid = True
@@ -1174,7 +1180,7 @@ class GridView(QListView):
         # Create a range based selector for each set of contiguous rows
         # as supplying selectors for each individual row causes very poor
         # performance if a large number of rows has to be selected.
-        for k, g in itertools.groupby(enumerate(rows), lambda i_x:i_x[0]-i_x[1]):
+        for k, g in itertools.groupby(enumerate(rows), lambda i_x: i_x[0]-i_x[1]):
             group = list(map(operator.itemgetter(1), g))
             sel.merge(QItemSelection(m.index(min(group), 0), m.index(max(group), 0)), QItemSelectionModel.SelectionFlag.Select)
         sm.select(sel, QItemSelectionModel.SelectionFlag.ClearAndSelect)

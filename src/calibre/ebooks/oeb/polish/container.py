@@ -14,6 +14,7 @@ import uuid
 from collections import defaultdict
 from io import BytesIO
 from itertools import count
+from math import floor
 
 from css_parser import getUrls, replaceUrls
 
@@ -128,6 +129,18 @@ def href_to_name(href, root, base=None):
         return None
 
 
+def seconds_to_timestamp(duration: float) -> str:
+    seconds = int(floor(duration))
+    float_part = duration - seconds
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    seconds = seconds % 60
+    ans = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+    if float_part:
+        ans += f'{float_part:.20f}'.rstrip('0')[1:]
+    return ans
+
+
 class ContainerBase:  # {{{
     '''
     A base class that implements just the parsing methods. Useful to create
@@ -150,11 +163,11 @@ class ContainerBase:  # {{{
         return adjust_mime_for_epub(filename=name, opf_version=self.opf_version_parsed)
 
     def decode(self, data, normalize_to_nfc=True):
-        """
+        '''
         Automatically decode ``data`` into a ``unicode`` object.
 
         :param normalize_to_nfc: Normalize returned unicode to the NFC normal form as is required by both the EPUB and AZW3 formats.
-        """
+        '''
         def fix_data(d):
             return d.replace('\r\n', '\n').replace('\r', '\n')
         if isinstance(data, str):
@@ -287,7 +300,7 @@ class Container(ContainerBase):  # {{{
             self.mime_map[self.opf_name] = guess_type('a.opf')
 
         if not hasattr(self, 'opf_name'):
-            raise InvalidBook('Could not locate opf file: %r'%opfpath)
+            raise InvalidBook(f'Could not locate opf file: {opfpath!r}')
 
         # Update mime map with data from the OPF
         self.refresh_mime_map()
@@ -331,7 +344,7 @@ class Container(ContainerBase):  # {{{
         item_id = 'id'
         while item_id in all_ids:
             c += 1
-            item_id = 'id' + '%d'%c
+            item_id = f'id{c}'
         manifest = self.opf_xpath('//opf:manifest')[0]
         href = self.name_to_href(name, self.opf_name)
         item = manifest.makeelement(OPF('item'),
@@ -356,7 +369,7 @@ class Container(ContainerBase):  # {{{
             base, ext = name.rpartition('.')[::2]
             if c > 1:
                 base = base.rpartition('-')[0]
-            name = '%s-%d.%s' % (base, c, ext)
+            name = f'{base}-{c}.{ext}'
         return name
 
     def add_file(self, name, data, media_type=None, spine_index=None, modify_name_if_needed=False, process_manifest_item=None):
@@ -368,8 +381,8 @@ class Container(ContainerBase):  # {{{
         href = self.name_to_href(name, self.opf_name)
         if self.has_name_case_insensitive(name) or self.manifest_has_name(name):
             if not modify_name_if_needed:
-                raise ValueError(('A file with the name %s already exists' % name) if self.has_name_case_insensitive(name) else
-                                 ('An item with the href %s already exists in the manifest' % href))
+                raise ValueError((f'A file with the name {name} already exists') if self.has_name_case_insensitive(name) else
+                                 (f'An item with the href {href} already exists in the manifest'))
             name = self.make_name_unique(name)
             href = self.name_to_href(name, self.opf_name)
         path = self.name_to_abspath(name)
@@ -401,7 +414,7 @@ class Container(ContainerBase):  # {{{
         that could reference this file. This is for performance, such updates
         should be done once, in bulk. '''
         if current_name in self.names_that_must_not_be_changed:
-            raise ValueError('Renaming of %s is not allowed' % current_name)
+            raise ValueError(f'Renaming of {current_name} is not allowed')
         if self.exists(new_name) and (new_name == current_name or new_name.lower() != current_name.lower()):
             # The destination exists and does not differ from the current name only by case
             raise ValueError(f'Cannot rename {current_name} to {new_name} as {new_name} already exists')
@@ -668,10 +681,13 @@ class Container(ContainerBase):  # {{{
         return parse_opf_version(self.opf_version)
 
     @property
+    def manifest_items(self):
+        return self.opf_xpath('//opf:manifest/opf:item[@href and @id]')
+
+    @property
     def manifest_id_map(self):
         ' Mapping of manifest id to canonical names '
-        return {item.get('id'):self.href_to_name(item.get('href'), self.opf_name)
-            for item in self.opf_xpath('//opf:manifest/opf:item[@href and @id]')}
+        return {item.get('id'):self.href_to_name(item.get('href'), self.opf_name) for item in self.manifest_items}
 
     @property
     def manifest_type_map(self):
@@ -827,7 +843,7 @@ class Container(ContainerBase):  # {{{
         spine = self.opf_xpath('//opf:spine')[0]
         spine.text = tail
         for name, linear in spine_items:
-            i = spine.makeelement('{%s}itemref' % OPF_NAMESPACES['opf'], nsmap={'opf':OPF_NAMESPACES['opf']})
+            i = spine.makeelement('{{{}}}itemref'.format(OPF_NAMESPACES['opf']), nsmap={'opf':OPF_NAMESPACES['opf']})
             i.tail = tail
             i.set('idref', imap[name])
             spine.append(i)
@@ -869,6 +885,12 @@ class Container(ContainerBase):  # {{{
                     self.remove_from_xml(meta)
                     self.dirty(self.opf_name)
 
+            for meta in self.opf_xpath('//opf:meta[@refines]'):
+                q = meta.get('refines')
+                if q.startswith('#') and q[1:] in removed:
+                    self.remove_from_xml(meta)
+                    self.dirty(self.opf_name)
+
         if remove_from_guide:
             for item in self.opf_xpath('//opf:guide/opf:reference[@href]'):
                 if self.href_to_name(item.get('href'), self.opf_name) == name:
@@ -881,6 +903,22 @@ class Container(ContainerBase):  # {{{
         self.mime_map.pop(name, None)
         self.parsed_cache.pop(name, None)
         self.dirtied.discard(name)
+
+    def set_media_overlay_durations(self, duration_map=None):
+        self.dirty(self.opf_name)
+        for meta in self.opf_xpath('//opf:meta[@property="media:duration"]'):
+            self.remove_from_xml(meta)
+        metadata = self.opf_xpath('//opf:metadata')[0]
+        total_duration = 0
+        for item_id, duration in (duration_map or {}).items():
+            meta = metadata.makeelement(OPF('meta'), property='media:duration', refines='#' + item_id)
+            meta.text = seconds_to_timestamp(duration)
+            self.insert_into_xml(metadata, meta)
+            total_duration += duration
+        if duration_map:
+            meta = metadata.makeelement(OPF('meta'), property='media:duration')
+            meta.text = seconds_to_timestamp(total_duration)
+            self.insert_into_xml(metadata, meta)
 
     def dirty(self, name):
         ''' Mark the parsed object corresponding to name as dirty. See also: :meth:`parsed`. '''
@@ -951,11 +989,13 @@ class Container(ContainerBase):  # {{{
         href = self.name_to_href(name, self.opf_name)
         base, ext = href.rpartition('.')[0::2]
         all_ids = {x.get('id') for x in self.opf_xpath('//*[@id]')}
+        if id_prefix.endswith('-'):
+            all_ids.add(id_prefix)
         c = 0
         item_id = id_prefix
         while item_id in all_ids:
             c += 1
-            item_id = id_prefix + '%d'%c
+            item_id = f'{id_prefix}{c}'
 
         manifest = self.opf_xpath('//opf:manifest')[0]
         item = manifest.makeelement(OPF('item'),
@@ -1085,12 +1125,12 @@ class Container(ContainerBase):  # {{{
             opath = other.name_path_map[name]
             with open(path, 'rb') as f1, open(opath, 'rb') as f2:
                 if f1.read() != f2.read():
-                    mismatches.append('The file %s is not the same'%name)
+                    mismatches.append(f'The file {name} is not the same')
         return '\n'.join(mismatches)
 # }}}
 
-# EPUB {{{
 
+# EPUB {{{
 
 class InvalidEpub(InvalidBook):
     pass
@@ -1207,7 +1247,7 @@ class EpubContainer(Container):
             container = safe_xml_fromstring(cf.read())
         opf_files = container.xpath((
             r'child::ocf:rootfiles/ocf:rootfile'
-            '[@media-type="%s" and @full-path]'%guess_type('a.opf')
+            '[@media-type="{}" and @full-path]'.format(guess_type('a.opf'))
             ), namespaces={'ocf':OCF_NS}
         )
         if not opf_files:
@@ -1237,7 +1277,7 @@ class EpubContainer(Container):
         if is_opf:
             for elem in self.parsed('META-INF/container.xml').xpath((
                 r'child::ocf:rootfiles/ocf:rootfile'
-                '[@media-type="%s" and @full-path]'%guess_type('a.opf')
+                '[@media-type="{}" and @full-path]'.format(guess_type('a.opf'))
                 ), namespaces={'ocf':OCF_NS}
             ):
                 # The asinine epubcheck cannot handle quoted filenames in
@@ -1294,13 +1334,13 @@ class EpubContainer(Container):
                 package_id = val
                 break
         if package_id is not None:
-            for elem in self.opf_xpath('//*[@id=%s]'%escape_xpath_attr(package_id)):
+            for elem in self.opf_xpath(f'//*[@id={escape_xpath_attr(package_id)}]'):
                 if elem.text:
                     raw_unique_identifier = elem.text
                     break
         if raw_unique_identifier is not None:
             idpf_key = raw_unique_identifier
-            idpf_key = re.sub('[\u0020\u0009\u000d\u000a]', '', idpf_key)
+            idpf_key = re.sub(r'[ \t\r\n]', '', idpf_key)
             idpf_key = hashlib.sha1(idpf_key.encode('utf-8')).digest()
         return package_id, raw_unique_identifier, idpf_key
 
@@ -1428,8 +1468,8 @@ class EpubContainer(Container):
 
 # }}}
 
-# AZW3 {{{
 
+# AZW3 {{{
 
 class InvalidMobi(InvalidBook):
     pass

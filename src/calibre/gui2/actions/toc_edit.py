@@ -95,7 +95,7 @@ class ToCEditAction(InterfaceActionWithLibraryDrop):
         if not ans:
             error_dialog(self.gui, _('Cannot edit ToC'),
                 _('Editing Table of Contents is only supported for books in the %s'
-                  ' formats. Convert to one of those formats before polishing.')
+                  ' formats. Convert to one of those formats before editing.')
                          %_(' or ').join(sorted(supported)), show=True)
         ans = OrderedDict(ans)
         if len(ans) > 5:
@@ -136,7 +136,7 @@ class ToCEditAction(InterfaceActionWithLibraryDrop):
         from calibre.utils.shm import SharedMemory
         db = self.gui.current_db
         path = db.format(book_id, fmt, index_is_id=True, as_path=True)
-        title = db.title(book_id, index_is_id=True) + ' [%s]'%fmt
+        title = db.title(book_id, index_is_id=True) + f' [{fmt}]'
         job = {'path': path, 'title': title}
         data = json.dumps(job).encode('utf-8')
         header = struct.pack('>II', 0, 0)

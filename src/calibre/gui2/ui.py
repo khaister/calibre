@@ -43,6 +43,7 @@ from calibre.gui2.auto_add import AutoAdder
 from calibre.gui2.changes import handle_changes
 from calibre.gui2.cover_flow import CoverFlowMixin
 from calibre.gui2.device import DeviceMixin
+from calibre.gui2.dialogs.ff_doc_editor import FFDocEditor
 from calibre.gui2.dialogs.message_box import JobError
 from calibre.gui2.ebook_download import EbookDownloadMixin
 from calibre.gui2.email import EmailMixin
@@ -85,7 +86,7 @@ def add_quick_start_guide(library_view, refresh_cover_browser=None):
     gprefs['quick_start_guide_added'] = True
     imgbuf = BytesIO(calibre_cover2(_('Quick Start Guide'), ''))
     try:
-        with open(P('quick_start/%s.epub' % l), 'rb') as src:
+        with open(P(f'quick_start/{l}.epub'), 'rb') as src:
             buf = BytesIO(src.read())
     except OSError as err:
         if err.errno != errno.ENOENT:
@@ -111,7 +112,6 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
         SavedSearchBoxMixin, SearchRestrictionMixin, LayoutMixin, UpdateMixin,
         EbookDownloadMixin
         ):
-
     'The main GUI'
 
     proceed_requested = pyqtSignal(object, object)
@@ -287,6 +287,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                 QIcon.ic('eject.png'), _('&Eject connected device'))
         self.eject_action.setEnabled(False)
         self.addAction(self.quit_action)
+        self.system_tray_menu.addAction(self.iactions['Restart'].menuless_qaction)
         self.system_tray_menu.addAction(self.quit_action)
         self.keyboard.register_shortcut('quit calibre', _('Quit calibre'),
                 default_keys=('Ctrl+Q',), action=self.quit_action)
@@ -329,6 +330,13 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                 action=self.alt_esc_action)
         self.alt_esc_action.triggered.connect(self.clear_additional_restriction)
 
+        self.ff_doc_editor_action = QAction(self)
+        self.addAction(self.ff_doc_editor_action)
+        self.keyboard.register_shortcut('open ff document editor',
+                _('Open the template documentation editor'), default_keys=(''),
+                action=self.ff_doc_editor_action)
+        self.ff_doc_editor_action.triggered.connect(self.open_ff_doc_editor)
+
         # ###################### Start spare job server ########################
         QTimer.singleShot(1000, self.create_spare_pool)
 
@@ -359,7 +367,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                 import traceback
                 traceback.print_exc()
         for view in ('library', 'memory', 'card_a', 'card_b'):
-            v = getattr(self, '%s_view' % view)
+            v = getattr(self, f'{view}_view')
             v.selectionModel().selectionChanged.connect(self.update_status_bar)
             v.model().count_changed_signal.connect(self.update_status_bar)
 
@@ -461,6 +469,9 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
 
     def esc(self, *args):
         self.search.clear()
+
+    def open_ff_doc_editor(self):
+        FFDocEditor(False).exec()
 
     def focus_current_view(self):
         view = self.current_view()
@@ -753,7 +764,6 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                 item_val = itemx[4:]
             else:
                 prints('Ignoring invalid item hexval', itemx, file=sys.stderr)
-                return
 
             def doit():
                 nonlocal item_id, item_val
@@ -863,12 +873,12 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
             try:
                 argv = json.loads(msg[len('launched:'):])
             except ValueError:
-                prints('Failed to decode message from other instance: %r' % msg)
+                prints(f'Failed to decode message from other instance: {msg!r}')
                 if DEBUG:
                     error_dialog(self, 'Invalid message',
                                  'Received an invalid message from other calibre instance.'
                                  ' Do you have multiple versions of calibre installed?',
-                                 det_msg='Invalid msg: %r' % msg, show=True)
+                                 det_msg=f'Invalid msg: {msg!r}', show=True)
                 argv = ()
             if isinstance(argv, (list, tuple)) and len(argv) > 1:
                 self.handle_cli_args(argv[1:])
@@ -899,7 +909,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
             try:
                 data = json.loads(msg[len('web-store:'):])
             except ValueError:
-                prints('Failed to decode message from other instance: %r' % msg)
+                prints(f'Failed to decode message from other instance: {msg!r}')
             path = data['path']
             if data['tags']:
                 before = self.current_db.new_api.all_book_ids()
@@ -912,11 +922,14 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                     tags += list(data['tags'])
                     self.current_db.new_api.set_field('tags', {book_id: tags})
         else:
-            prints('Ignoring unknown message from other instance: %r' % msg[:20])
+            prints(f'Ignoring unknown message from other instance: {msg[:20]!r}')
 
     def current_view(self):
         '''Convenience method that returns the currently visible view '''
-        idx = self.stack.currentIndex()
+        try:
+            idx = self.stack.currentIndex()
+        except AttributeError:
+            return None  # happens during startup
         if idx == 0:
             return self.library_view
         if idx == 1:
@@ -968,6 +981,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                             return
                     else:
                         return
+            self._save_tb_state(gprefs)
             for action in self.iactions.values():
                 try:
                     action.library_about_to_change(olddb, db)
@@ -994,6 +1008,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
             if db.new_api.pref('virtual_lib_on_startup'):
                 self.apply_virtual_library(db.new_api.pref('virtual_lib_on_startup'))
             self.rebuild_vl_tabs()
+            self._restore_tb_expansion_state()  # Do this before plugins library_changed()
             for action in self.iactions.values():
                 try:
                     action.library_changed(db)
@@ -1038,6 +1053,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
         self.book_details.reset_info()
         self.layout_container.tag_browser_button.setEnabled(location == 'library')
         self.layout_container.cover_browser_button.setEnabled(location == 'library')
+        self.vl_tabs.update_visibility()
         for action in self.iactions.values():
             action.location_selected(location)
         if location == 'library':
@@ -1116,7 +1132,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                     msg = msg[msg.find('calibre.web.feeds.input.RecipeDisabled:'):]
                     msg = msg.partition(':')[-1]
                     d = error_dialog(self, _('Recipe Disabled'),
-                        '<p>%s</p>'%msg)
+                        f'<p>{msg}</p>')
                     d.setModal(False)
                     d.show()
                     self._modeless_dialogs.append(d)
@@ -1132,7 +1148,7 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                             'error':error_dialog}.get(payload['level'],
                                     error_dialog)
                     d = d(self, payload['title'],
-                            '<p>%s</p>'%payload['msg'],
+                            '<p>{}</p>'.format(payload['msg']),
                             det_msg=payload['det_msg'])
                     d.setModal(False)
                     d.show()
@@ -1151,16 +1167,32 @@ class Main(MainWindow, MainWindowMixin, DeviceMixin, EmailMixin,  # {{{
                     _('<b>Failed</b>')+': '+str(job.description),
                     det_msg=job.details, retry_func=retry_func)
 
+    def _save_tb_state(self, gprefs):
+        self.tb_widget.save_state(gprefs)
+        if gprefs['tag_browser_restore_tree_expansion'] and self.current_db is not None:
+            tv_saved_expansions = gprefs.get('tags_view_saved_expansions', {})
+            tv_saved_expansions.update({self.current_db.library_id: self.tb_widget.get_expansion_state()})
+            gprefs['tags_view_saved_expansions'] = tv_saved_expansions
+
+    def _restore_tb_expansion_state(self):
+        if gprefs['tag_browser_restore_tree_expansion'] and self.current_db is not None:
+            tv_saved_expansions = gprefs.get('tags_view_saved_expansions', {})
+            self.tb_widget.restore_expansion_state(tv_saved_expansions.get(self.current_db.library_id))
+
     def read_settings(self):
         self.restore_geometry(gprefs, 'calibre_main_window_geometry', get_legacy_saved_geometry=lambda: config['main_window_geometry'])
         self.read_layout_settings()
+        self._restore_tb_expansion_state()
 
     def write_settings(self):
         with gprefs:  # Only write to gprefs once
             self.save_geometry(gprefs, 'calibre_main_window_geometry')
             dynamic.set('sort_history', self.library_view.model().sort_history)
             self.save_layout_state()
-            self.tb_widget.save_state()
+            self._save_tb_state(gprefs)
+
+    def restart(self):
+        self.quit(restart=True)
 
     def quit(self, checked=True, restart=False, debug_on_restart=False,
             confirm_quit=True, no_plugins_on_restart=False):

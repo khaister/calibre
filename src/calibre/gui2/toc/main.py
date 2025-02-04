@@ -74,7 +74,7 @@ class XPathDialog(QDialog):  # {{{
         l.addWidget(la)
         self.widgets = []
         for i in range(5):
-            la = _('Level %s ToC:')%('&%d'%(i+1))
+            la = _('Level %s ToC:')%(f'&{i + 1}')
             xp = XPathEdit(self)
             xp.set_msg(la)
             self.widgets.append(xp)
@@ -270,7 +270,7 @@ class ItemView(QStackedWidget):  # {{{
         l.addWidget(la, 1, 0, 1, 2)
 
         # Item status
-        ip.hl1 = hl =  QFrame()
+        ip.hl1 = hl = QFrame()
         hl.setFrameShape(QFrame.Shape.HLine)
         l.addWidget(hl, l.rowCount(), 0, 1, 2)
         self.icon_label = QLabel()
@@ -278,7 +278,7 @@ class ItemView(QStackedWidget):  # {{{
         self.status_label.setWordWrap(True)
         l.addWidget(self.icon_label, l.rowCount(), 0)
         l.addWidget(self.status_label, l.rowCount()-1, 1)
-        ip.hl2 = hl =  QFrame()
+        ip.hl2 = hl = QFrame()
         hl.setFrameShape(QFrame.Shape.HLine)
         l.addWidget(hl, l.rowCount(), 0, 1, 2)
 
@@ -292,7 +292,7 @@ class ItemView(QStackedWidget):  # {{{
             _('&Remove this entry'), self)
         l.addWidget(b, l.rowCount(), 0, 1, 2)
         b.clicked.connect(self.delete_item)
-        ip.hl3 = hl =  QFrame()
+        ip.hl3 = hl = QFrame()
         hl.setFrameShape(QFrame.Shape.HLine)
         l.addWidget(hl, l.rowCount(), 0, 1, 2)
         l.setRowMinimumHeight(rs, 20)
@@ -315,7 +315,7 @@ class ItemView(QStackedWidget):  # {{{
                        'level as this entry.'))
         l.addWidget(b, l.rowCount()+1, 0, 1, 2)
 
-        ip.hl4 = hl =  QFrame()
+        ip.hl4 = hl = QFrame()
         hl.setFrameShape(QFrame.Shape.HLine)
         l.addWidget(hl, l.rowCount(), 0, 1, 2)
         l.setRowMinimumHeight(rs, 20)
@@ -363,10 +363,10 @@ class ItemView(QStackedWidget):  # {{{
         self.prefs.set('toc_from_headings_prefer_title', d.prefer_title_cb.isChecked())
 
     def create_from_major_headings(self):
-        self.headings_question(['//h:h%d'%i for i in range(1, 4)])
+        self.headings_question([f'//h:h{i}' for i in range(1, 4)])
 
     def create_from_all_headings(self):
-        self.headings_question(['//h:h%d'%i for i in range(1, 7)])
+        self.headings_question([f'//h:h{i}' for i in range(1, 7)])
 
     def create_from_user_xpath(self):
         d = XPathDialog(self, self.prefs)
@@ -397,7 +397,7 @@ class ItemView(QStackedWidget):  # {{{
     def populate_item_pane(self):
         item = self.current_item
         name = str(item.data(0, Qt.ItemDataRole.DisplayRole) or '')
-        self.item_pane.heading.setText('<h2>%s</h2>'%name)
+        self.item_pane.heading.setText(f'<h2>{name}</h2>')
         self.icon_label.setPixmap(item.data(0, Qt.ItemDataRole.DecorationRole
                                             ).pixmap(32, 32))
         tt = _('This entry points to an existing destination')
@@ -525,7 +525,7 @@ class TreeWidget(QTreeWidget):  # {{{
             # have to ensure that selectedIndexes returns an ordered list of
             # indexes.
             sort_map = {self.indexFromItem(item):i for i, item in enumerate(self.iter_items())}
-            ans = sorted(ans, key=lambda x:sort_map.get(x, -1))
+            ans = sorted(ans, key=lambda x: sort_map.get(x, -1))
         return ans
 
     def highlight_item(self, item):
@@ -671,7 +671,7 @@ class TreeWidget(QTreeWidget):  # {{{
     def bulk_rename(self):
         from calibre.gui2.tweak_book.file_list import get_bulk_rename_settings
         sort_map = {id(item):i for i, item in enumerate(self.iter_items())}
-        items = sorted(self.selectedItems(), key=lambda x:sort_map.get(id(x), -1))
+        items = sorted(self.selectedItems(), key=lambda x: sort_map.get(id(x), -1))
         settings = get_bulk_rename_settings(self, len(items), prefix=_('Chapter '), msg=_(
             'All selected items will be renamed to the form prefix-number'), sanitize=lambda x:x, leading_zeros=False)
         fmt, num = settings['prefix'], settings['start']
@@ -704,7 +704,7 @@ class TreeWidget(QTreeWidget):  # {{{
 
         def key(k):
             sc = str(QKeySequence(k | Qt.KeyboardModifier.ControlModifier).toString(QKeySequence.SequenceFormat.NativeText))
-            return ' [%s]'%sc
+            return f' [{sc}]'
 
         if item is not None:
             m = QMenu(self)
@@ -1012,7 +1012,6 @@ class TOCView(QWidget):  # {{{
     def undo(self):
         self.tocw.pop_history()
 
-
 # }}}
 
 
@@ -1194,13 +1193,15 @@ class TOCEditor(QDialog):  # {{{
 
 
 def develop():
-    from calibre.utils.webengine import setup_fake_protocol
-    setup_fake_protocol()
     from calibre.gui2 import Application
     app = Application([])
+    from calibre.utils.webengine import setup_default_profile, setup_fake_protocol
+    setup_fake_protocol()
+    setup_default_profile()
     d = TOCEditor(sys.argv[-1])
     d.start()
-    d.exec()
+    d.open()
+    app.exec()
     del app
 
 
@@ -1234,9 +1235,10 @@ def main(shm_name=None):
         setup_default_profile()
         d = TOCEditor(path, title=title, write_result_to=path + '.result')
         d.start()
-        ok = 0
-        if d.exec() == QDialog.DialogCode.Accepted:
-            ok = 1
+        # Using d.exec() causes showing the webview to hide the dialog
+        d.open()
+        app.exec()
+        ok = 1 if d.result() == QDialog.DialogCode.Accepted else 0
         s = struct.pack('>II', 2, ok)
         shm.seek(0), shm.write(s), shm.flush()
 
@@ -1246,5 +1248,4 @@ def main(shm_name=None):
 
 
 if __name__ == '__main__':
-    main(path=sys.argv[-1], title='test')
-    os.remove(sys.argv[-1] + '.lock')
+    develop()

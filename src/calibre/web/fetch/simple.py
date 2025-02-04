@@ -43,7 +43,6 @@ class FetchError(Exception):
 
 
 class closing:
-
     'Context to automatically close something at the end of a block.'
 
     def __init__(self, thing):
@@ -80,7 +79,7 @@ def basename(url):
     except:
         global bad_url_counter
         bad_url_counter += 1
-        return 'bad_url_%d.html'%bad_url_counter
+        return f'bad_url_{bad_url_counter}.html'
     if not os.path.splitext(res)[1]:
         return 'index.html'
     return res
@@ -124,7 +123,7 @@ def default_is_link_wanted(url, tag):
 
 class RecursiveFetcher:
     LINK_FILTER = tuple(re.compile(i, re.IGNORECASE) for i in
-                ('.exe\\s*$', '.mp3\\s*$', '.ogg\\s*$', '^\\s*mailto:', '^\\s*$'))
+                (r'.exe\s*$', r'.mp3\s*$', r'.ogg\s*$', r'^\s*mailto:', r'^\s*$'))
     # ADBLOCK_FILTER = tuple(re.compile(i, re.IGNORECASE) for it in
     #                       (
     #
@@ -290,7 +289,7 @@ class RecursiveFetcher:
         except URLError as err:
             if hasattr(err, 'code') and err.code in responses:
                 raise FetchError(responses[err.code])
-            is_temp = False
+            is_temp = getattr(err, 'worth_retry', False)
             reason = getattr(err, 'reason', None)
             if isinstance(reason, socket.gaierror):
                 # see man gai_strerror() for details
@@ -460,7 +459,7 @@ class RecursiveFetcher:
                     if itype not in {'png', 'jpg', 'jpeg'}:
                         itype = 'png' if itype == 'gif' else 'jpeg'
                         data = image_to_data(img, fmt=itype)
-                    if self.compress_news_images and itype in {'jpg','jpeg'}:
+                    if self.compress_news_images:
                         try:
                             data = self.rescale_image(data)
                         except Exception:
@@ -545,8 +544,8 @@ class RecursiveFetcher:
                     dsrc = self.fetch_url(iurl)
                     newbaseurl = dsrc.newurl
                     if len(dsrc) == 0 or \
-                       len(re.compile(b'<!--.*?-->', re.DOTALL).sub(b'', dsrc).strip()) == 0:
-                        raise ValueError('No content at URL %r'%iurl)
+                       len(re.compile(br'<!--.*?-->', re.DOTALL).sub(b'', dsrc).strip()) == 0:
+                        raise ValueError(f'No content at URL {iurl!r}')
                     if callable(self.encoding):
                         dsrc = self.encoding(dsrc)
                     elif self.encoding is not None:

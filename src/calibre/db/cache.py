@@ -14,13 +14,13 @@ import sys
 import traceback
 import weakref
 from collections import defaultdict
-from collections.abc import MutableSet, Set
+from collections.abc import Iterable, MutableSet, Set
 from functools import partial, wraps
 from io import DEFAULT_BUFFER_SIZE, BytesIO
 from queue import Queue
 from threading import Lock
 from time import mktime, monotonic, sleep, time
-from typing import NamedTuple, Optional, Tuple
+from typing import NamedTuple
 
 from calibre import as_unicode, detect_ncpus, isbytestring
 from calibre.constants import iswindows, preferred_encoding
@@ -40,7 +40,7 @@ from calibre.db.tables import VirtualTable
 from calibre.db.utils import type_safe_sort_key_function
 from calibre.db.write import get_series_values, uniq
 from calibre.ebooks import check_ebook_format
-from calibre.ebooks.metadata import author_to_author_sort, string_to_authors
+from calibre.ebooks.metadata import author_to_author_sort, string_to_authors, title_sort
 from calibre.ebooks.metadata.book.base import Metadata
 from calibre.ebooks.metadata.opf2 import metadata_to_opf
 from calibre.ptempfile import PersistentTemporaryFile, SpooledTemporaryFile, base_dir
@@ -135,7 +135,6 @@ dynamic_category_preferences = frozenset({'grouped_search_make_user_categories',
 
 
 class Cache:
-
     '''
     An in-memory cache of the metadata.db file from a calibre library.
     This class also serves as a threadsafe API for accessing the database.
@@ -152,8 +151,10 @@ class Cache:
         self.shutting_down = False
         self.is_doing_rebuild_or_vacuum = False
         self.backend = backend
-        self.library_database_instance = (None if library_database_instance is None else
-                                          weakref.ref(library_database_instance))
+        # We want templates to have access to LibraryDatabase if we have it,
+        # otherwise this instance (Cache)
+        self.database_instance = (weakref.ref(self) if library_database_instance is None else
+                                  weakref.ref(library_database_instance))
         self.event_dispatcher = EventDispatcher()
         self.fields = {}
         self.composites = {}
@@ -433,13 +434,12 @@ class Cache:
 
             for field, table in iteritems(self.backend.tables):
                 self.fields[field] = create_field(field, table, bools_are_tristate,
-                                          self.backend.get_template_functions)
+                                                  self.backend.get_template_functions, self.database_instance)
                 if table.metadata['datatype'] == 'composite':
                     self.composites[field] = self.fields[field]
 
-            self.fields['ondevice'] = create_field('ondevice',
-                    VirtualTable('ondevice'), bools_are_tristate,
-                    self.backend.get_template_functions)
+            self.fields['ondevice'] = create_field('ondevice', VirtualTable('ondevice'), bools_are_tristate,
+                                                   self.backend.get_template_functions, self.database_instance)
 
             for name, field in iteritems(self.fields):
                 if name[0] == '#' and name.endswith('_index'):
@@ -724,7 +724,7 @@ class Cache:
         return self.backend.add_notes_resource(path_or_stream_or_data, name, mtime)
 
     @read_api
-    def get_notes_resource(self, resource_hash) -> Optional[dict]:
+    def get_notes_resource(self, resource_hash) -> dict | None:
         ' Return a dict containing the resource data and name or None if no resource with the specified hash is found '
         return self.backend.get_notes_resource(resource_hash)
 
@@ -916,7 +916,7 @@ class Cache:
         try:
             return frozenset(self.fields[field].table.id_map.values())
         except AttributeError:
-            raise ValueError('%s is not a many-one or many-many field' % field)
+            raise ValueError(f'{field} is not a many-one or many-many field')
 
     @read_api
     def get_usage_count_by_id(self, field):
@@ -925,7 +925,7 @@ class Cache:
         try:
             return {k:len(v) for k, v in iteritems(self.fields[field].table.col_book_map)}
         except AttributeError:
-            raise ValueError('%s is not a many-one or many-many field' % field)
+            raise ValueError(f'{field} is not a many-one or many-many field')
 
     @read_api
     def get_id_map(self, field):
@@ -937,7 +937,7 @@ class Cache:
         except AttributeError:
             if field == 'title':
                 return self.fields[field].table.book_col_map.copy()
-            raise ValueError('%s is not a many-one or many-many field' % field)
+            raise ValueError(f'{field} is not a many-one or many-many field')
 
     @read_api
     def get_item_name(self, field, item_id):
@@ -946,21 +946,23 @@ class Cache:
         return self.fields[field].table.id_map[item_id]
 
     @read_api
-    def get_item_id(self, field, item_name):
-        ' Return the item id for item_name (case-insensitive) or None if not found '
-        q = icu_lower(item_name)
-        try:
-            for item_id, item_val in self.fields[field].table.id_map.items():
-                if icu_lower(item_val) == q:
-                    return item_id
-        except KeyError:
-            return None
+    def get_item_id(self, field, item_name, case_sensitive=False):
+        ''' Return the item id for item_name or None if not found.
+        This function is very slow if doing lookups for multiple names use either get_item_ids() or get_item_name_map().
+        Similarly, case sensitive lookups are faster than case insensitive ones. '''
+        field = self.fields[field]
+        if hasattr(field, 'item_ids_for_names'):
+            d = field.item_ids_for_names(self.backend, (item_name,), case_sensitive)
+            for v in d.values():
+                return v
 
     @read_api
-    def get_item_ids(self, field, item_names):
-        ' Return the item id for item_name (case-insensitive) '
-        rmap = {icu_lower(v) if isinstance(v, str) else v:k for k, v in iteritems(self.fields[field].table.id_map)}
-        return {name:rmap.get(icu_lower(name) if isinstance(name, str) else name, None) for name in item_names}
+    def get_item_ids(self, field, item_names, case_sensitive=False):
+        ' Return a dict mapping item_name to the item id or None '
+        field = self.fields[field]
+        if hasattr(field, 'item_ids_for_names'):
+            return field.item_ids_for_names(self.backend, item_names, case_sensitive)
+        return dict.fromkeys(item_names)
 
     @read_api
     def get_item_name_map(self, field, normalize_func=None):
@@ -990,7 +992,7 @@ class Cache:
             name = self.fields['formats'].format_fname(book_id, fmt)
             path = self._field_for('path', book_id).replace('/', os.sep)
         except:
-            raise NoSuchFormat('Record %d has no fmt: %s'%(book_id, fmt))
+            raise NoSuchFormat(f'Record {book_id} has no fmt: {fmt}')
         return self.backend.format_hash(book_id, fmt, name, path)
 
     @api
@@ -1090,7 +1092,7 @@ class Cache:
                 # We can't clear the composite caches because a read lock is set.
                 # As a consequence the value of a composite column that calls
                 # virtual_libraries() might be wrong. Oh well. Log and keep running.
-                print('Couldn\'t get write lock after vls_for_books_cache was loaded', file=sys.stderr)
+                print("Couldn't get write lock after vls_for_books_cache was loaded", file=sys.stderr)
                 traceback.print_exc()
 
         if get_cover:
@@ -1220,7 +1222,7 @@ class Cache:
             name = self.fields['formats'].format_fname(book_id, fmt)
             path = self._field_for('path', book_id).replace('/', os.sep)
         except (KeyError, AttributeError):
-            raise NoSuchFormat('Record %d has no %s file'%(book_id, fmt))
+            raise NoSuchFormat(f'Record {book_id} has no {fmt} file')
 
         return self.backend.copy_format_to(book_id, fmt, name, path, dest,
                                                use_hardlink=use_hardlink, report_file_size=report_file_size)
@@ -1540,12 +1542,13 @@ class Cache:
 
     @api
     def get_categories(self, sort='name', book_ids=None, already_fixed=None,
-                       first_letter_sort=False):
+                       first_letter_sort=False, uncollapsed_categories=None):
         ' Used internally to implement the Tag Browser '
         try:
             with self.safe_read_lock:
                 return get_categories(self, sort=sort, book_ids=book_ids,
-                                      first_letter_sort=first_letter_sort)
+                                      first_letter_sort=first_letter_sort,
+                                      uncollapsed_categories=uncollapsed_categories)
         except InvalidLinkTable as err:
             bad_field = err.field_name
             if bad_field == already_fixed:
@@ -1882,6 +1885,7 @@ class Cache:
 
                 val = mi.get('title_sort', None)
                 if (force_changes and val is not None) or not mi.is_null('title_sort'):
+
                     protected_set_field('sort', val)
 
                 # identifiers will always be replaced if force_changes is True
@@ -2109,7 +2113,7 @@ class Cache:
 
     @read_api
     def has_id(self, book_id):
-        ' Return True iff the specified book_id exists in the db '''
+        ' Return True iff the specified book_id exists in the db '
         return book_id in self.fields['title'].table.book_col_map
 
     @write_api
@@ -2133,6 +2137,8 @@ class Cache:
             mi.authors = (_('Unknown'),)
         aus = mi.author_sort if not mi.is_null('author_sort') else self._author_sort_from_authors(mi.authors)
         mi.title = mi.title or _('Unknown')
+        if mi.is_null('title_sort'):
+            mi.title_sort = title_sort(mi.title, lang=mi.languages[0] if mi.languages else None)
         if isbytestring(aus):
             aus = aus.decode(preferred_encoding, 'replace')
         if isbytestring(mi.title):
@@ -2247,7 +2253,6 @@ class Cache:
         :param change_index: When renaming in a series-like field also change the series_index values.
         :param restrict_to_book_ids: An optional set of book ids for which the rename is to be performed, defaults to all books.
         '''
-
         f = self.fields[field]
         affected_books = set()
         try:
@@ -2314,10 +2319,10 @@ class Cache:
         try:
             func = f.table.rename_item
         except AttributeError:
-            raise ValueError('Cannot rename items for one-one fields: %s' % field)
+            raise ValueError(f'Cannot rename items for one-one fields: {field}')
         moved_books = set()
         id_map = {}
-        for item_id, new_name in iteritems(item_id_to_new_name_map):
+        for item_id, new_name in item_id_to_new_name_map.items():
             new_names = tuple(x.strip() for x in new_name.split(sv)) if sv else (new_name,)
             books, new_id = func(item_id, new_names[0], self.backend)
             affected_books.update(books)
@@ -2369,7 +2374,7 @@ class Cache:
         removed. '''
         missing = frozenset(val_map) - self._all_book_ids()
         if missing:
-            raise ValueError('add_custom_book_data: no such book_ids: %d'%missing)
+            raise ValueError(f'add_custom_book_data: no such book_ids: {missing}')
         self.backend.add_custom_data(name, val_map, delete_first)
 
     @read_api
@@ -2528,7 +2533,9 @@ class Cache:
             raise ValueError(f"Lookup name {for_field} doesn't have a link map")
         lm = table.link_map
         vm = table.id_map
-        return {vm.get(fid):v for fid,v in lm.items() if v}
+        ans = {vm.get(fid):v for fid,v in lm.items() if v}
+        ans.pop(None, None)
+        return ans
 
     @read_api
     def link_for(self, field, item_id):
@@ -2698,7 +2705,7 @@ class Cache:
         if mi.authors:
             try:
                 quathors = mi.authors[:20]  # Too many authors causes parsing of the search expression to fail
-                query = ' and '.join('authors:"=%s"'%(a.replace('"', '')) for a in quathors)
+                query = ' and '.join('authors:"={}"'.format(a.replace('"', '')) for a in quathors)
                 qauthors = mi.authors[20:]
             except ValueError:
                 return identical_book_ids
@@ -3182,6 +3189,9 @@ class Cache:
 
     @read_api
     def annotations_map_for_book(self, book_id, fmt, user_type='local', user='viewer'):
+        '''
+        Return a map of annotation type -> annotation data for the specified book_id, format, user and user_type.
+        '''
         ans = {}
         for annot in self.backend.annotations_for_book(book_id, fmt, user_type, user):
             ans.setdefault(annot['type'], []).append(annot)
@@ -3189,22 +3199,40 @@ class Cache:
 
     @read_api
     def all_annotations_for_book(self, book_id):
+        '''
+        Return a tuple containing all annotations for the specified book_id as a dict with keys:
+        `format`, `user_type`, `user`, `annotation`. Here, annotation is the annotation data.
+        '''
         return tuple(self.backend.all_annotations_for_book(book_id))
 
     @read_api
     def annotation_count_for_book(self, book_id):
+        '''
+        Return the number of annotations for the specified book available in the database.
+        '''
         return self.backend.annotation_count_for_book(book_id)
 
     @read_api
     def all_annotation_users(self):
+        '''
+        Return a tuple of all (user_type, user name) that have annotations.
+        '''
         return tuple(self.backend.all_annotation_users())
 
     @read_api
     def all_annotation_types(self):
+        '''
+        Return a tuple of all annotation types in the database.
+        '''
         return tuple(self.backend.all_annotation_types())
 
     @read_api
     def all_annotations(self, restrict_to_user=None, limit=None, annotation_type=None, ignore_removed=False, restrict_to_book_ids=None):
+        '''
+        Return a tuple of all annotations matching the specified criteria.
+        `ignore_removed` controls whether removed (deleted) annotations are also returned. Removed annotations are just a skeleton
+        used for merging of annotations.
+        '''
         return tuple(self.backend.all_annotations(restrict_to_user, limit, annotation_type, ignore_removed, restrict_to_book_ids))
 
     @read_api
@@ -3220,6 +3248,9 @@ class Cache:
         restrict_to_user=None,
         ignore_removed=False
     ):
+        '''
+        Return of a tuple of annotations matching the specified Full-text query.
+        '''
         return tuple(self.backend.search_annotations(
             fts_engine_query, use_stemming, highlight_start, highlight_end,
             snippet_size, annotation_type, restrict_to_book_ids, restrict_to_user,
@@ -3228,10 +3259,16 @@ class Cache:
 
     @write_api
     def delete_annotations(self, annot_ids):
+        '''
+        Delete annotations with the specified ids.
+        '''
         self.backend.delete_annotations(annot_ids)
 
     @write_api
     def update_annotations(self, annot_id_map):
+        '''
+        Update annotations.
+        '''
         self.backend.update_annotations(annot_id_map)
 
     @write_api
@@ -3249,10 +3286,16 @@ class Cache:
 
     @write_api
     def set_annotations_for_book(self, book_id, fmt, annots_list, user_type='local', user='viewer'):
+        '''
+        Set all annotations for the specified book_id, fmt, user_type and user.
+        '''
         self.backend.set_annotations_for_book(book_id, fmt, annots_list, user_type, user)
 
     @write_api
     def merge_annotations_for_book(self, book_id, fmt, annots_list, user_type='local', user='viewer'):
+        '''
+        Merge the specified annotations into the existing annotations for book_id, fm, user_type, and user.
+        '''
         from calibre.utils.date import EPOCH
         from calibre.utils.iso8601 import parse_iso8601
         amap = self._annotations_map_for_book(book_id, fmt, user_type=user_type, user=user)
@@ -3314,8 +3357,19 @@ class Cache:
         self._clear_extra_files_cache(dest_id)
         return added
 
+    @write_api
+    def remove_extra_files(self, book_id: int, relpaths: Iterable[str], permanent=False) -> dict[str, Exception | None]:
+        '''
+        Delete the specified extra files, either to Recycle Bin or permanently.
+        '''
+        path = self._field_for('path', book_id)
+        if path:
+            self._clear_extra_files_cache(book_id)
+            return self.backend.remove_extra_files(path, relpaths, permanent)
+        return dict.fromkeys(relpaths)
+
     @read_api
-    def list_extra_files(self, book_id, use_cache=False, pattern='') -> Tuple[ExtraFile, ...]:
+    def list_extra_files(self, book_id, use_cache=False, pattern='') -> tuple[ExtraFile, ...]:
         '''
         Get information about extra files in the book's directory.
 
